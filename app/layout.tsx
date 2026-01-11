@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import type { Metadata, ResolvingMetadata, Viewport } from "next";
 import { Inter, Poppins } from "next/font/google";
+// @ts-expect-error css-modules.d.ts not working
 import "./globals.css";
 import GlobalProvider from "@/app/global-provider";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import { AuthProvider } from "@/provider/auth";
 import { getUser } from "@/lib/auth/dal";
 import localFont from "next/font/local";
@@ -102,6 +104,7 @@ export default async function RootLayout({
     <html lang="en">
       <body className={`${inter.variable} ${poppins.variable} antialiased`}>
         <GlobalProvider>
+          <SpeedInsights />
           <AuthProvider user={user}>{children}</AuthProvider>
         </GlobalProvider>
       </body>
