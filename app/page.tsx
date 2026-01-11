@@ -22,7 +22,7 @@ export default function HomePage() {
             <div className="flex shrink-0">
               <Link href="/">
                 <Image
-                  src="/logo.svg"
+                  src="/Logo.svg"
                   alt="Helm Logo"
                   width={120}
                   height={40}
