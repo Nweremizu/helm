@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import type { Metadata, ResolvingMetadata, Viewport } from "next";
 import { Inter, Poppins } from "next/font/google";
-// @ts-expect-error css-modules.d.ts not working
 import "./globals.css";
 import GlobalProvider from "@/app/global-provider";
 import { SpeedInsights } from "@vercel/speed-insights/next";
