@@ -1,0 +1,263 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+// --------------------------------------------------------
+// CONFIGURATION
+// --------------------------------------------------------
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --------------------------------------------------------
+// 1. USER & AUTH
+// --------------------------------------------------------
+model User {
+  id           String  @id @default(uuid())
+  name         String?
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+
+  // Profile
+  avatarUrl      String? @map("avatar_url")
+  avatarPublicId String? @map("avatar_public_id")
+  currency       String  @default("NGN") // User's preferred display currency
+
+  // Salary Detection (manual tagging)
+  salaryKeyword     String? @map("salary_keyword") // e.g., "ACME CORP SALARY"
+  expectedSalaryDay Int?    @map("expected_salary_day") // Day of month (1-31)
+
+  // Budget Planning (The "Fuel" Tank)
+  monthlyIncomeTarget Int @default(0) @map("monthly_income_target") // Stored in Kobo
+
+  // Security & Audit
+  isVerified Boolean  @default(false) @map("is_verified")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Auth Relationships
+  sessions Session[]
+
+  // Domain Relationships
+  accounts     LinkedAccount[]
+  transactions Transaction[]
+  budgets      BudgetPlan[]
+  snapshots    DailySnapshot[]
+  insights     Insight[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// --------------------------------------------------------
+// 2. THE BANK CONNECTIONS (Mono/Plaid)
+// --------------------------------------------------------
+model LinkedAccount {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  // Mono Identifiers
+  monoAccountId String  @unique @map("mono_account_id")
+  institutionId String? @map("institution_id") // ID of the bank (e.g., "66059e003a...")
+
+  // Display Data
+  bankName    String  @map("bank_name") // "GTBank"
+  accountName String  @map("account_name") // "Savings - 0123"
+  accountType String? @map("account_type") // "savings", "current"
+  currency    String  @default("NGN")
+
+  // Caching - stored in Kobo
+  balance      Int      @default(0)
+  lastSyncedAt DateTime @default(now()) @map("last_synced_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@map("linked_accounts")
+}
+
+// --------------------------------------------------------
+// 3. TRANSACTIONS (The Core Ledger)
+// --------------------------------------------------------
+model Transaction {
+  id        String @id @default(uuid())
+  userId    String @map("user_id")
+  accountId String @map("account_id")
+
+  // 3a. Integrity (Prevent Duplicates)
+  monoId String @unique @map("mono_id") // The ID returned by Mono. CRITICAL.
+
+  // 3b. The Money (stored in Kobo for precision)
+  amount   Int // Raw Kobo value from Mono (e.g., 1884281 = ₦18,842.81)
+  type     TransactionType // DEBIT or CREDIT
+  status   PaymentStatus   @default(CLEARED)
+  date     DateTime
+  balance  Int? // Account balance after transaction (Kobo)
+  currency String          @default("NGN")
+
+  // 3c. The Description (Raw vs AI Cleaned)
+  originalNarration String @map("original_narration") // "POS WDL 1234 UBER EATS"
+
+  // AI Output Fields
+  cleanName     String? @map("clean_name") // "Uber Eats"
+  cleanCategory String? @map("clean_category") // "Food"
+  icon          String? // "food" (matches lucide-react names)
+
+  // 3d. Metadata & Flags
+  isProcessed Boolean @default(false) @map("is_processed") // True if AI/Rules have run
+  isRecurring Boolean @default(false) @map("is_recurring") // Detected subscription
+
+  rawBankData Json? @map("raw_bank_data") // Backup of full Mono object
+
+  user     User          @relation(fields: [userId], references: [id])
+  account  LinkedAccount @relation(fields: [accountId], references: [id])
+  insights Insight[]
+
+  // Indexes for Performance
+  @@index([userId, date]) // Fast dashboard loading
+  @@index([userId, date, type]) // Fast filtered queries
+  @@index([userId, cleanCategory]) // Fast category filtering
+  @@index([isProcessed]) // Fast worker lookup (Find unprocessed txs)
+  @@map("transactions")
+}
+
+// --------------------------------------------------------
+// 4. THE AI BRAIN (The "Lazy Librarian")
+// --------------------------------------------------------
+// This table stores the rules learned by Gemini.
+// e.g. If narration contains "NETFLIX", set category="Utilities", icon="zap"
+model MerchantRule {
+  id String @id @default(uuid())
+
+  keyword String @unique // The trigger: "UBER", "NETFLIX", "KUDA"
+
+  // The Output
+  cleanName String @map("clean_name") // "Uber"
+  category  String // "Transport"
+  icon      String // "car"
+
+  matchCount Int      @default(0) @map("match_count") // How often this rule is used
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("merchant_rules")
+}
+
+// --------------------------------------------------------
+// 5. BUDGETING & GOALS
+// --------------------------------------------------------
+model BudgetPlan {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  category    String // "Food", "Rent"
+  limitAmount Decimal    @db.Decimal(12, 2)
+  type        BudgetType // ANCHOR or VARIABLE
+
+  // Visuals
+  color String? // Hex code for charts
+  icon  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, category])
+  @@map("budget_plans")
+}
+
+// --------------------------------------------------------
+// 6. ANALYTICS (Daily Net Worth)
+// --------------------------------------------------------
+model DailySnapshot {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  date DateTime @default(now()) @db.Date
+
+  // The State (End of day balance) - stored in Kobo
+  totalBalance Int @map("total_balance")
+
+  // The Velocity (Activity during the day) - stored in Kobo
+  totalIncome  Int @default(0) @map("total_income")
+  totalExpense Int @default(0) @map("total_expense")
+
+  // Optional: Category breakdown JSON for detailed daily analysis
+  breakdown Json?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("daily_snapshots")
+}
+
+// --------------------------------------------------------
+// 7. SONAR INTELLIGENCE (Pattern Detection & Insights)
+// --------------------------------------------------------
+model Insight {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  type     InsightType // ALERT, TREND, RECURRING
+  title    String // "Netflix Price Hike Detected"
+  message  String // "Your subscription jumped from ₦4,500 to ₦5,000."
+  severity String // "info", "warning", "critical"
+
+  // Link to transaction (optional)
+  relatedTransactionId String? @map("related_transaction_id")
+
+  // Metadata
+  isRead     Boolean   @default(false) @map("is_read")
+  archivedAt DateTime? @map("archived_at") // Soft delete after 30 days
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  relatedTransaction Transaction? @relation(fields: [relatedTransactionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead, archivedAt])
+  @@index([userId, createdAt])
+  @@map("insights")
+}
+
+// --------------------------------------------------------
+// ENUMS
+// --------------------------------------------------------
+enum TransactionType {
+  DEBIT
+  CREDIT
+}
+
+enum PaymentStatus {
+  PENDING
+  CLEARED
+  FAILED
+}
+
+enum BudgetType {
+  ANCHOR // Fixed (Rent, Insurance)
+  VARIABLE // Discretionary (Food, Shopping)
+}
+
+enum InsightType {
+  ALERT // Immediate action needed (Double charge, Price hike, High bill)
+  TREND // Spending pattern ("You spent 20% more on Food this week")
+  RECURRING // Subscription detection or recurring transaction identified
+}
